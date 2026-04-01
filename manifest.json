@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Raptive Bad Ads Inspector",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Overlay Raptive ads, inspect GAM and bidder fields, and export slot history.",
   "permissions": [
     "webRequest",

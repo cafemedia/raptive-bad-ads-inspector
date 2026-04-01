@@ -1,0 +1,112 @@
+name: Release Extension
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  release:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    env:
+      EXTENSION_ID: pjajkapobocjcelbbephfncpkgemencc
+      PUBLISHER_ID: ${{ secrets.CHROME_EXT_PUBLISHER_ID }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Capture commit message
+        id: commit
+        run: echo "message=$(git log -1 --pretty=%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Bump manifest version
+        id: version
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest_path = Path('manifest.json')
+          manifest = json.loads(manifest_path.read_text())
+          version = manifest.get('version', '0.0.0')
+          parts = version.split('.')
+          if len(parts) != 3 or not all(p.isdigit() for p in parts):
+              raise SystemExit(f'Unsupported manifest version: {version}')
+          major, minor, patch = map(int, parts)
+          new_version = f"{major}.{minor}.{patch + 1}"
+          manifest['version'] = new_version
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+          Path('.version').write_text(new_version)
+          print(new_version)
+          PY
+          echo "value=$(cat .version)" >> "$GITHUB_OUTPUT"
+
+      - name: Create extension zip
+        run: |
+          zip -r "raptive-bad-ads-inspector-v${{ steps.version.outputs.value }}.zip" \
+            manifest.json \
+            background.js \
+            content.js \
+            injected.js \
+            popup.html \
+            popup.js \
+            icon_16.png \
+            icon_32.png \
+            icon_48.png \
+            icon_128.png
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "chore(release): v${{ steps.version.outputs.value }}"
+          git tag "v${{ steps.version.outputs.value }}"
+          git push origin HEAD:main --follow-tags
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-v${{ steps.version.outputs.value }}
+          path: raptive-bad-ads-inspector-v${{ steps.version.outputs.value }}.zip
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.value }}
+          name: v${{ steps.version.outputs.value }}
+          body: ${{ steps.commit.outputs.message }}
+          files: raptive-bad-ads-inspector-v${{ steps.version.outputs.value }}.zip
+
+      - name: Generate Chrome Web Store access token
+        id: cws-access-token
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.CHROME_EXT_JSON }}
+          service_account: ${{ secrets.CHROME_EXT_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+
+      - name: Upload Chrome extension
+        env:
+          ACCESS_TOKEN: ${{ steps.cws-access-token.outputs.access_token }}
+        run: |
+          curl --fail --show-error --silent \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -X POST \
+            -T "raptive-bad-ads-inspector-v${{ steps.version.outputs.value }}.zip" \
+            "https://chromewebstore.googleapis.com/upload/v2/publishers/$PUBLISHER_ID/items/$EXTENSION_ID:upload"
+
+      - name: Publish extension
+        env:
+          ACCESS_TOKEN: ${{ steps.cws-access-token.outputs.access_token }}
+        run: |
+          curl --fail --show-error --silent \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -X POST \
+            "https://chromewebstore.googleapis.com/v2/publishers/$PUBLISHER_ID/items/$EXTENSION_ID:publish"
